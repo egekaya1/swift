@@ -6307,6 +6307,8 @@ ERROR(global_actor_arg,none,
       (Type))
 ERROR(global_actor_non_final_class,none,
       "non-final class %0 cannot be a global actor", (DeclName))
+ERROR(global_actor_on_class_inheritance_clause,none,
+      "global actor attribute cannot be applied to a class base type", ())
 ERROR(global_actor_top_level_var,none,
       "top-level code variables cannot have a global actor", ())
 ERROR(global_actor_access,none,

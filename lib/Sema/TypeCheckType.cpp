@@ -3814,6 +3814,12 @@ TypeResolver::resolveAttributedType(TypeRepr *repr, TypeResolutionOptions option
     CustomAttr *customAttr = nullptr;
     (void)resolveGlobalActor(repr->getLoc(), options,
                              customAttr, attrs);
+    if (customAttr && !ty->hasError() && !ty->isConstraintType()) {
+      diagnoseInvalid(repr, customAttr->getLocation(),
+                      diag::global_actor_on_class_inheritance_clause)
+          .fixItRemove(customAttr->getRangeWithAt());
+      ty = ErrorType::get(getASTContext());
+    }
   }
 
   if (handleInheritedOnly(claim<UncheckedTypeAttr>(attrs)) ||
