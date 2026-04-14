@@ -1,3 +1,8 @@
+// RUN: %target-typecheck-verify-swift -target %target-swift-5.1-abi-triple -strict-concurrency=targeted
+// RUN: %target-typecheck-verify-swift -target %target-swift-5.1-abi-triple -strict-concurrency=complete
+
+// REQUIRES: concurrency
+
 // Test that global actor annotations are rejected on class base types but
 // allowed on protocol conformances (SE-0466 isolated conformances).
 
