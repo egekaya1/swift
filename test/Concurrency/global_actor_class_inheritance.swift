@@ -18,10 +18,10 @@ protocol P {}
 protocol Q {}
 
 // ERROR: global actor on a class base type.
-class Sub1: @SomeActor Base {} // expected-error {{global actor attribute cannot be applied to a class base type}}
+class Sub1: @SomeActor Base {} // expected-error {{global actor 'SomeActor' cannot apply to non-protocol type 'Base'}}
 
 // ERROR: @MainActor on a class base type.
-class Sub2: @MainActor Base {} // expected-error {{global actor attribute cannot be applied to a class base type}}
+class Sub2: @MainActor Base {} // expected-error {{global actor 'MainActor' cannot apply to non-protocol type 'Base'}}
 
 // OK: global actor on a protocol conformance (SE-0466 isolated conformances).
 class Sub3: @SomeActor P {}
@@ -33,7 +33,7 @@ class Sub4: @MainActor P {}
 class Sub5: @MainActor P & Q {}
 
 // ERROR: global actor on a class base type, with additional conformances.
-class Sub6: @SomeActor Base, P {} // expected-error {{global actor attribute cannot be applied to a class base type}}
+class Sub6: @SomeActor Base, P {} // expected-error {{global actor 'SomeActor' cannot apply to non-protocol type 'Base'}}
 
 // OK: no global actor annotation.
 class Sub7: Base {}
