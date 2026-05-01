@@ -92,9 +92,7 @@ split_embedded_sources(
   EMBEDDED FlatMap.swift
   EMBEDDED Flatten.swift
   EMBEDDED FloatingPoint.swift
-  EMBEDDED FloatingPointFromString.swift
   EMBEDDED FloatingPointRandom.swift
-  EMBEDDED FloatingPointToString.swift
   EMBEDDED HashTable.swift
   EMBEDDED Hashable.swift
   EMBEDDED Hasher.swift
@@ -239,6 +237,7 @@ split_embedded_sources(
   EMBEDDED UnicodeSPI.swift
   EMBEDDED UnicodeScalar.swift
   EMBEDDED UnicodeScalarProperties.swift
+  EMBEDDED UniqueBox.swift
   EMBEDDED Unmanaged.swift
   EMBEDDED UnmanagedOpaqueString.swift
   EMBEDDED UnmanagedString.swift
@@ -259,7 +258,9 @@ split_embedded_sources(
   OUT_LIST_NORMAL SWIFTLIB_GYB_SOURCES
 
     NORMAL AtomicInt.swift.gyb
+  EMBEDDED FloatingPointFromString.swift
   EMBEDDED FloatingPointParsing.swift.gyb
+  EMBEDDED FloatingPointToString.swift
   EMBEDDED FloatingPointTypes.swift.gyb
   EMBEDDED IntegerTypes.swift.gyb
   EMBEDDED LegacyInt128.swift.gyb
@@ -292,6 +293,7 @@ if(NOT BOOTSTRAPPING_MODE STREQUAL "OFF" AND NOT SWIFT_FREESTANDING_FLAVOR AND N
 endif()
 
 list(APPEND SWIFTLIB_EMBEDDED_SOURCES
+  EmbeddedCasting.swift
   EmbeddedRuntime.swift
   EmbeddedStubs.swift
   EmbeddedPrint.swift
@@ -347,6 +349,7 @@ list(APPEND swift_stdlib_compile_flags "-enable-experimental-feature" "AllowUnsa
 list(APPEND swift_stdlib_compile_flags "-enable-experimental-feature" "SuppressedAssociatedTypesWithDefaults")
 list(APPEND swift_stdlib_compile_flags "-enable-experimental-feature" "Reparenting")
 list(APPEND swift_stdlib_compile_flags "-enable-experimental-feature" "Lifetimes")
+list(APPEND swift_stdlib_compile_flags "-enable-experimental-feature" "BorrowInout")
 list(APPEND swift_stdlib_compile_flags "-enable-experimental-feature" "BorrowAndMutateAccessors")
 list(APPEND swift_stdlib_compile_flags "-strict-memory-safety")
 
