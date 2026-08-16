@@ -3816,8 +3816,30 @@ TypeResolver::resolveAttributedType(TypeRepr *repr, TypeResolutionOptions option
   // If we're in an inheritance clause, check for a global actor.
   if (options.is(TypeResolverContext::Inherited)) {
     CustomAttr *customAttr = nullptr;
-    (void)resolveGlobalActor(repr->getLoc(), options,
-                             customAttr, attrs);
+    Type globalActorType = resolveGlobalActor(repr->getLoc(), options,
+                                              customAttr, attrs);
+    if (customAttr && !ty->hasError() && !ty->isConstraintType()) {
+      bool isEnum = false;
+      if (auto *NTD = getDeclContext()->getSelfNominalTypeDecl()) {
+        isEnum = isa<EnumDecl>(NTD);
+      }
+      unsigned kind = isEnum ? 1 : 0;
+
+      diagnoseInvalid(repr, customAttr->getLocation(),
+                      diag::global_actor_on_non_protocol_inheritance,
+                      globalActorType, kind, ty);
+
+      getASTContext().Diags.diagnose(customAttr->getLocation(),
+                                     diag::global_actor_on_non_protocol_inheritance_note,
+                                     kind);
+
+      getASTContext().Diags.diagnose(customAttr->getLocation(),
+                                     diag::remove_global_actor_annotation,
+                                     globalActorType)
+          .fixItRemove(customAttr->getRangeWithAt());
+
+      ty = ErrorType::get(getASTContext());
+    }
   }
 
   if (handleInheritedOnly(claim<UncheckedTypeAttr>(attrs)) ||

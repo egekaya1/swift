@@ -353,3 +353,41 @@ class ComputedGetSetWitness: HasMutableVar {
     set { }
   }
 }
+
+
+// Test that global actor annotations are rejected on class base types and enum raw types
+// in inheritance clauses but allowed on protocol conformances (SE-0466 isolated conformances).
+
+actor SomeActorInstance {}
+
+@globalActor
+struct SomeActor {
+  static let shared = SomeActorInstance()
+}
+
+class BaseClass {}
+protocol Q {}
+
+// ERROR: global actor on a class base type.
+class Sub1: @SomeActor BaseClass {} // expected-error {{global actor '@SomeActor' cannot apply to superclass 'BaseClass'}} expected-note {{inheritance from a superclass cannot be isolated}} expected-note {{remove '@SomeActor'}}
+
+// ERROR: @MainActor on a class base type.
+class Sub2: @MainActor BaseClass {} // expected-error {{global actor '@MainActor' cannot apply to superclass 'BaseClass'}} expected-note {{inheritance from a superclass cannot be isolated}} expected-note {{remove '@MainActor'}}
+
+// OK: global actor on a protocol conformance (SE-0466 isolated conformances).
+class Sub3: @SomeActor P {}
+class Sub4: @MainActor P {}
+class Sub5: @MainActor P & Q {}
+
+// ERROR: global actor on a class base type, with additional conformances.
+class Sub6: @SomeActor BaseClass, P {} // expected-error {{global actor '@SomeActor' cannot apply to superclass 'BaseClass'}} expected-note {{inheritance from a superclass cannot be isolated}} expected-note {{remove '@SomeActor'}}
+
+// ERROR: global actor on an enum raw type.
+enum Enum1: @MainActor Int { // expected-error {{global actor '@MainActor' cannot apply to raw type 'Int'}} expected-note {{inheritance from a raw type cannot be isolated}} expected-note {{remove '@MainActor'}}
+  case a
+}
+
+// OK: no global actor annotation.
+class Sub7: BaseClass {}
+class Sub8: BaseClass, P {}
+enum Enum2: Int { case a }

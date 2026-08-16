@@ -6581,6 +6581,14 @@ NOTE(global_actor_shared_non_let_witness_silence,none,
      "if this property always returns the same instance, silence the warning "
      "with '@diagnose(UnstableGlobalActorShared, as: ignored)'",
      ())
+ERROR(global_actor_on_non_protocol_inheritance,none,
+      "global actor %0 cannot apply to %select{superclass|raw type}1 %2",
+      (Type, unsigned, Type))
+NOTE(global_actor_on_non_protocol_inheritance_note,none,
+     "inheritance from a %select{superclass|raw type}0 cannot be isolated",
+     (unsigned))
+NOTE(remove_global_actor_annotation,none,
+     "remove %0", (Type))
 ERROR(global_actor_top_level_var,none,
       "top-level code variables cannot have a global actor", ())
 ERROR(global_actor_access,none,
