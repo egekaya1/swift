@@ -371,6 +371,12 @@ enum class TypeMatchFlags {
   IgnoreFunctionGlobalActorIsolation = 1 << 8,
   /// Require parameter labels to match.
   RequireMatchingParameterLabels = 1 << 9,
+  /// When comparing function types, treat a missing Clang function type on
+  /// either side as compatible with a present one. Used by deserialization's
+  /// cross-reference near-match to tolerate module build skew where an older
+  /// module didn't record the Clang function type; two present-but-different
+  /// Clang types still mismatch.
+  AllowMissingClangType = 1 << 10,
 };
 using TypeMatchOptions = OptionSet<TypeMatchFlags>;
 
@@ -2093,45 +2099,6 @@ public:
 };
 DEFINE_EMPTY_CAN_TYPE_WRAPPER(BuiltinUnsafeValueBufferType, BuiltinType)
 
-/// A builtin vector type.
-class BuiltinVectorType : public BuiltinType, public llvm::FoldingSetNode {
-  Type elementType;
-  unsigned numElements;
-
-  friend class ASTContext;
-
-  BuiltinVectorType(const ASTContext &context, Type elementType,
-                    unsigned numElements)
-    : BuiltinType(TypeKind::BuiltinVector, context),
-      elementType(elementType), numElements(numElements) { }
-
-public:
-  static BuiltinVectorType *get(const ASTContext &context, Type elementType,
-                                unsigned numElements);
-
-  /// Retrieve the type of this vector's elements.
-  Type getElementType() const { return elementType; }
-
-  /// Retrieve the number of elements in this vector.
-  unsigned getNumElements() const { return numElements; }
-
-  void Profile(llvm::FoldingSetNodeID &ID) {
-    Profile(ID, getElementType(), getNumElements());
-  }
-  static void Profile(llvm::FoldingSetNodeID &ID, Type elementType,
-                      unsigned numElements) {
-    ID.AddPointer(elementType.getPointer());
-    ID.AddInteger(numElements);
-  }
-
-  static bool classof(const TypeBase *T) {
-    return T->getKind() == TypeKind::BuiltinVector;
-  }
-};
-BEGIN_CAN_TYPE_WRAPPER(BuiltinVectorType, BuiltinType)
-  PROXY_CAN_TYPE_SIMPLE_GETTER(getElementType)
-END_CAN_TYPE_WRAPPER(BuiltinVectorType, BuiltinType)
-
 class BuiltinImplicitActorType : public BuiltinType {
   friend class ASTContext;
 
@@ -2383,6 +2350,55 @@ public:
   }
 };
 DEFINE_EMPTY_CAN_TYPE_WRAPPER(BuiltinFloatType, BuiltinType)
+
+/// A builtin vector type.
+class BuiltinVectorType : public BuiltinType, public llvm::FoldingSetNode {
+  Type elementType;
+  unsigned numElements;
+
+  friend class ASTContext;
+
+  BuiltinVectorType(const ASTContext &context, Type elementType,
+                    unsigned numElements)
+    : BuiltinType(TypeKind::BuiltinVector, context),
+      elementType(elementType), numElements(numElements) { }
+
+public:
+  static BuiltinVectorType *get(const ASTContext &context, Type elementType,
+                                unsigned numElements);
+  
+  /// The vector type with the same number of elements but each element is
+  /// twice as wide. E.g. if this type is Vec8xInt8, getExtended gives us
+  /// Vec8xInt16.
+  BuiltinVectorType *getExtended(const ASTContext &C) const;
+  
+  /// The vector type with the same number of elements but each element is
+  /// half as wide. E.g. if this type is Vec8xInt32, getTruncated gives us
+  /// Vec8xInt16.
+  BuiltinVectorType *getTruncated(const ASTContext &C) const;
+
+  /// Retrieve the type of this vector's elements.
+  Type getElementType() const { return elementType; }
+
+  /// Retrieve the number of elements in this vector.
+  unsigned getNumElements() const { return numElements; }
+
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    Profile(ID, getElementType(), getNumElements());
+  }
+  static void Profile(llvm::FoldingSetNodeID &ID, Type elementType,
+                      unsigned numElements) {
+    ID.AddPointer(elementType.getPointer());
+    ID.AddInteger(numElements);
+  }
+
+  static bool classof(const TypeBase *T) {
+    return T->getKind() == TypeKind::BuiltinVector;
+  }
+};
+BEGIN_CAN_TYPE_WRAPPER(BuiltinVectorType, BuiltinType)
+  PROXY_CAN_TYPE_SIMPLE_GETTER(getElementType)
+END_CAN_TYPE_WRAPPER(BuiltinVectorType, BuiltinType)
   
 /// An abstract type for all sugared types to make getDesugaredType() fast by
 /// sharing field offsets and logic for the fast path.
@@ -8669,10 +8685,13 @@ inline CanType CanType::getNominalParent() const {
 }
 
 inline bool CanType::isActuallyCanonicalOrNull() const {
-  return getPointer() == nullptr ||
-         getPointer() == llvm::DenseMapInfo<TypeBase *>::getEmptyKey() ||
-         getPointer() == llvm::DenseMapInfo<TypeBase *>::getTombstoneKey() ||
-         getPointer()->isCanonical();
+#if LLVM_VERSION_MAJOR <= 21
+  if (getPointer() == llvm::DenseMapInfo<TypeBase *>::getEmptyKey() ||
+      getPointer() == llvm::DenseMapInfo<TypeBase *>::getTombstoneKey())
+    return true;
+#endif
+
+  return getPointer() == nullptr || getPointer()->isCanonical();
 }
 
 inline TupleTypeElt TupleTypeElt::getWithName(Identifier name) const {

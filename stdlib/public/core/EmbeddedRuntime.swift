@@ -199,9 +199,25 @@ func alignedAlloc(size: Int, alignment: Int) -> UnsafeMutableRawPointer? {
 
 @c
 public func swift_coroFrameAlloc(_ size: Int, _ type: UInt64) -> UnsafeMutableRawPointer? {
-  return unsafe alignedAlloc(
-    size: size,
-    alignment: _swift_MinAllocationAlignment)
+  return unsafe alignedAlloc(size: size, alignment: _swift_MinAllocationAlignment)
+}
+
+@c
+public func swift_coroFrameAllocTyped(_ size: Int, _ type: UInt64) -> UnsafeMutableRawPointer? {
+#if SWIFT_USE_EMBEDDED_SWIFT_PLATFORM
+  return unsafe _swift_typedAllocate(size, _swift_MinAllocationAlignment - 1, 0, type)
+#else
+  return unsafe alignedAlloc(size: size, alignment: _swift_MinAllocationAlignment)
+#endif
+}
+
+@c
+public func swift_coroFrameDeallocTyped(_ ptr: UnsafeMutableRawPointer, _ type: UInt64) {
+#if SWIFT_USE_EMBEDDED_SWIFT_PLATFORM
+  unsafe _swift_typedDeallocate(ptr, -1, _swift_MinAllocationAlignment - 1, 0, type)
+#else
+  unsafe free(ptr)
+#endif
 }
 
 @c
@@ -425,6 +441,25 @@ public func swift_allocBox(_ metadata: Builtin.RawPointer) -> (Builtin.RawPointe
   return (object._rawValue, boxedValueAddr._rawValue)
 }
 
+@_silgen_name("swift_allocBoxTyped")
+public func swift_allocBoxTyped(_ metadata: Builtin.RawPointer, _ typeId: UInt64) -> (Builtin.RawPointer, Builtin.RawPointer) {
+  let layout = unsafe _boxAllocationLayout(metadata: UnsafeMutableRawPointer(metadata))
+
+#if SWIFT_USE_EMBEDDED_SWIFT_PLATFORM
+  let p = unsafe _swift_typedAllocate(layout.size, layout.alignMask, 0, typeId)!
+#else
+  let p = unsafe swift_slowAlloc(layout.size, layout.alignMask)!
+#endif
+  let object = unsafe p.assumingMemoryBound(to: HeapObject.self)
+
+  unsafe _swift_embedded_set_heap_object_metadata_pointer(object, UnsafeMutableRawPointer(metadata))
+  unsafe object.pointee.refcount = 1
+
+  let boxedValueAddr = unsafe UnsafeMutableRawPointer(p).advanced(by: layout.startOfBoxedValue)
+
+  return (object._rawValue, boxedValueAddr._rawValue)
+}
+
 @c
 public func swift_deallocBox(_ pointer: UnsafeMutableRawPointer) {
   let object = unsafe pointer.bindMemory(to: HeapObject.self, capacity: 1)
@@ -504,7 +539,8 @@ public func _errorBoxDestroyImpl(
     UnsafeMutableRawPointer(mutating: contents.type),
     UnsafeMutableRawPointer(mutating: contents.value))
   let layout = unsafe _errorBoxLayout(metadata: contents.type)
-  unsafe swift_slowDealloc(p, layout.totalSize, layout.totalAlignMask)
+  Builtin.deallocErrorBoxTyped(
+    object, layout.totalSize._builtinWordValue, layout.totalAlignMask._builtinWordValue)
 }
 
 /// Metadata storage for error boxes. Layout matches ClassMetadata: [superclass, destroy, ivarDestroyer].
@@ -545,10 +581,10 @@ public func swift_allocError(
 
   _ensureErrorMetadataInitialized()
   let metaPtr = unsafe Builtin.addressof(&_errorMetadataStorage)
-  let objectPtr = swift_allocObject(
-    metadata: metaPtr,
-    requiredSize: layout.totalSize,
-    requiredAlignmentMask: layout.totalAlignMask)
+  let objectPtr = Builtin.allocErrorBoxTyped(
+    metaPtr,
+    layout.totalSize._builtinWordValue,
+    layout.totalAlignMask._builtinWordValue)
   let p = UnsafeMutableRawPointer(objectPtr)
 
   // Store type and errorConformance after the HeapObject header
@@ -582,8 +618,8 @@ public func swift_deallocError(
   _ metadata: Builtin.RawPointer
 ) {
   let layout = unsafe _errorBoxLayout(metadata: UnsafeRawPointer(metadata))
-  unsafe swift_slowDealloc(
-    UnsafeMutableRawPointer(box), layout.totalSize, layout.totalAlignMask)
+  Builtin.deallocErrorBoxTyped(
+    box, layout.totalSize._builtinWordValue, layout.totalAlignMask._builtinWordValue)
 }
 
 /// Extract the value address, type metadata, and error conformance from an error box.
@@ -633,6 +669,25 @@ public func swifft_makeBoxUnique(buffer: Builtin.RawPointer, metadata: Builtin.R
     let refAndObjectAddr = swift_allocBox(metadata)
     unsafe _swift_embedded_initialize_box(UnsafeMutableRawPointer(metadata), UnsafeMutableRawPointer(refAndObjectAddr.1), oldObjectAddr)
     unsafe swift_releaseBox(UnsafeMutableRawPointer(box))
+    unsafe addrOfHeapObjectPtr.pointee = refAndObjectAddr.0
+    return refAndObjectAddr
+  } else {
+    return (box, oldObjectAddr._rawValue)
+  }
+}
+
+@_silgen_name("swift_makeBoxUniqueTyped")
+public func swift_makeBoxUniqueTyped(buffer: Builtin.RawPointer, metadata: Builtin.RawPointer, alignMask: Int, typeId: UInt64) -> (Builtin.RawPointer, Builtin.RawPointer){
+  let addrOfHeapObjectPtr = unsafe UnsafeMutablePointer<Builtin.RawPointer>(buffer)
+  let box = unsafe addrOfHeapObjectPtr.pointee
+  let headerSize = unsafe MemoryLayout<Int>.size + MemoryLayout<UnsafeRawPointer>.size
+  let startOfBoxedValue = ((headerSize + alignMask) & ~alignMask)
+  let oldObjectAddr = unsafe UnsafeMutableRawPointer(box) + startOfBoxedValue
+
+  if !swift_isUniquelyReferenced_native(object: box) {
+    let refAndObjectAddr = swift_allocBoxTyped(metadata, typeId)
+    unsafe _swift_embedded_initialize_box(UnsafeMutableRawPointer(metadata), UnsafeMutableRawPointer(refAndObjectAddr.1), oldObjectAddr)
+    unsafe swift_releaseBoxTyped(UnsafeMutableRawPointer(box), typeId)
     unsafe addrOfHeapObjectPtr.pointee = refAndObjectAddr.0
     return refAndObjectAddr
   } else {
@@ -766,7 +821,7 @@ public func swift_nonatomic_release_n(object: Builtin.RawPointer, n: UInt32) {
   swift_release_n(object: object, n: n)
 }
 
-func swift_release_n_(object: UnsafeMutablePointer<HeapObject>?, n: UInt32, isBoxRelease: Bool = false) {
+func swift_release_n_(object: UnsafeMutablePointer<HeapObject>?, n: UInt32, isBoxRelease: Bool = false, typeId: UInt64 = 0) {
   guard let object = unsafe object else {
     return
   }
@@ -792,7 +847,22 @@ func swift_release_n_(object: UnsafeMutablePointer<HeapObject>?, n: UInt32, isBo
     unsafe storeRelaxed(refcount, newValue: HeapObject.immortalRefCount | (doNotFree ? HeapObject.doNotFreeBit : 0))
 
     if isBoxRelease {
+        // _swift_embedded_invoke_box_destroy only runs the boxed payload's
+        // destroy witness and doesn't deallocate the box (a memory leak
+        // otherwise). We deallocate it here.
         unsafe _swift_embedded_invoke_box_destroy(object)
+
+        let metadata = unsafe _swift_embedded_get_heap_object_metadata_pointer(object)
+        let layout = unsafe _boxAllocationLayout(metadata: metadata)
+#if SWIFT_USE_EMBEDDED_SWIFT_PLATFORM
+        if typeId != 0 {
+          unsafe _swift_typedDeallocate(UnsafeMutableRawPointer(object), layout.size, layout.alignMask, 0, typeId)
+        } else {
+          unsafe _swift_deallocate(UnsafeMutableRawPointer(object), layout.size, layout.alignMask, 0)
+        }
+#else
+        unsafe swift_slowDealloc(UnsafeMutableRawPointer(object), layout.size, layout.alignMask)
+#endif
     } else {
         unsafe _swift_embedded_invoke_heap_object_destroy(object)
     }
@@ -809,6 +879,16 @@ public func swift_releaseBox(_ box: UnsafeMutableRawPointer) {
   }
   let o = unsafe UnsafeMutablePointer<HeapObject>(object)
   unsafe swift_release_n_(object: o, n: 1, isBoxRelease: true)
+}
+
+@c
+public func swift_releaseBoxTyped(_ box: UnsafeMutableRawPointer, _ typeId: UInt64) {
+  let object = box._rawValue
+  if !isValidPointerForNativeRetain(object: object) {
+    fatalError("not a valid pointer for releaseBox")
+  }
+  let o = unsafe UnsafeMutablePointer<HeapObject>(object)
+  unsafe swift_release_n_(object: o, n: 1, isBoxRelease: true, typeId: typeId)
 }
 
 @c

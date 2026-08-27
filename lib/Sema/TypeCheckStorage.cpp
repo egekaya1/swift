@@ -909,9 +909,9 @@ static void diagnoseReadWriteMutatingnessMismatch(
   auto nameForAccessor = [&](AccessorKind kind) -> StringRef {
     if (auto *decl = storage->getParsedAccessor(kind))
       return getAccessorNameForDiagnostic(
-          decl, /*article=*/false, /*underscored=*/hasCoroutineAccessorFeature);
+          decl, /*article=*/false, /*legacy=*/hasCoroutineAccessorFeature);
     return getAccessorNameForDiagnostic(
-        kind, /*article=*/false, /*underscored=*/hasCoroutineAccessorFeature);
+        kind, /*article=*/false, /*legacy=*/hasCoroutineAccessorFeature);
   };
 
   auto readerAccessor = directAccessorKindForReadImpl(storage->getReadImpl());
@@ -941,7 +941,7 @@ static void diagnoseReadWriteMutatingnessMismatch(
   modifyAccessor->diagnose(
       diag::readwriter_mutatingness_differs_from_reader_or_writer_mutatingness,
       getAccessorNameForDiagnostic(modifyAccessor, /*article=*/false,
-                                   /*underscored=*/hasCoroutineAccessorFeature),
+                                   /*legacy=*/hasCoroutineAccessorFeature),
       isModifierMutating ? SelfAccessKind::Mutating
                          : SelfAccessKind::NonMutating,
       diagnosticForm, writerAccessorName, SelfAccessKind::NonMutating,
@@ -952,7 +952,7 @@ static void diagnoseReadWriteMutatingnessMismatch(
                      getAccessorNameForDiagnostic(
                          writerAccesor,
                          /*article=*/false,
-                         /*underscored=*/hasCoroutineAccessorFeature),
+                         /*legacy=*/hasCoroutineAccessorFeature),
                      0);
   }
   AccessorDecl *reader = nullptr;
@@ -4023,8 +4023,8 @@ static void finishPropertyWrapperImplInfo(VarDecl *var,
   if (var->hasObservers() || var->getDeclContext()->isLocalContext()) {
     info = StorageImplInfo::getMutableComputed();
   } else {
-    info = StorageImplInfo(ReadImplKind::Get, WriteImplKind::Set,
-                           ReadWriteImplKind::Modify);
+    info = StorageImplInfo::getMutableOpaque(OpaqueReadOwnership::Owned,
+                                             var->getASTContext());
   }
 }
 
@@ -4337,6 +4337,18 @@ StorageImplInfoRequest::evaluate(Evaluator &evaluator,
       writeImpl = WriteImplKind::Set;
       readWriteImpl = ReadWriteImplKind::MaterializeToTemporary;
     }
+    if (storage->getParsedAccessor(AccessorKind::YieldingMutate)) {
+      // `yielding mutate` implies `yielding borrow`
+      // (unless it's overridden later in this function).
+      readImpl = ReadImplKind::YieldingBorrow;
+      // If there's a written `set`, use `yielding mutate` only
+      // for read/write access and use the `set` for simple write.
+      // If there isn't a written `set`, use `yielding mutate` for
+      // both.
+      if (!storage->getParsedAccessor(AccessorKind::Set))
+        writeImpl = WriteImplKind::YieldingMutate;
+      readWriteImpl = ReadWriteImplKind::YieldingMutate;
+    }
     if (storage->getParsedAccessor(AccessorKind::Get)) {
       readImpl = ReadImplKind::Get;
     }
@@ -4379,9 +4391,9 @@ StorageImplInfoRequest::evaluate(Evaluator &evaluator,
       if (auto willSet = storage->getParsedAccessor(AccessorKind::WillSet)) {
         willSet->diagnose(diag::observing_accessor_conflicts_with_accessor, 0,
                           getAccessorNameForDiagnostic(
-                              firstNonObserver->getAccessorKind(),
+                              firstNonObserver,
                               /*article=*/true,
-                              /*underscored=*/hasCoroutineAccessorFeature));
+                              /*legacy=*/hasCoroutineAccessorFeature));
         willSet->setInvalid();
         hasWillSet = false;
       }
@@ -4389,9 +4401,9 @@ StorageImplInfoRequest::evaluate(Evaluator &evaluator,
       if (auto didSet = storage->getParsedAccessor(AccessorKind::DidSet)) {
         didSet->diagnose(diag::observing_accessor_conflicts_with_accessor, 1,
                          getAccessorNameForDiagnostic(
-                             firstNonObserver->getAccessorKind(),
+                             firstNonObserver,
                              /*article=*/true,
-                             /*underscored=*/hasCoroutineAccessorFeature));
+                             /*legacy=*/hasCoroutineAccessorFeature));
         didSet->setInvalid();
         hasDidSet = false;
       }

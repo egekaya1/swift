@@ -298,18 +298,41 @@ public protocol DistributedActorSystem<SerializationRequirement>: Sendable {
     where Act: DistributedActor,
           Act.ID == ActorID
 
-  /// Called during when a distributed actor is deinitialized, or fails to initialize completely (e.g. by throwing
+  /// Called during when a *local* distributed actor is deinitialized, or fails to initialize completely (e.g. by throwing
   /// out of an `init` that did not completely initialize all of the actors stored properties yet).
   ///
   /// This method is guaranteed to be called at-most-once for a given id (assuming IDs are unique,
   /// and not re-cycled by the system), i.e. if it is called during a failure to initialize completely,
   /// the call from the actor's deinitializer will not happen (as under these circumstances, `deinit` will be run).
   ///
-  /// If `resignID` gets called with some unknown ID, it should crash immediately as it signifies some
-  /// very unexpected use of the system.
+  /// - Parameter id: the id of an actor managed by this system that is being deinitialized.
   ///
-  /// - Parameter id: the id of an actor managed by this system that has begun its `deinit`.
+  /// - SeeAlso: ``resignRemoteID(_:)`` which is called for remote distributed actor referencesd.
   func resignID(_ id: ActorID)
+
+  /// Called when a *remote* distributed actor reference is being deinitialized.
+  ///
+  /// Paired with a prior `resolve(id:as:)` call for this `id` that resulted in a remote reference being created.
+  /// This method is only called for identifiers of a remote proxy actor.
+  ///
+  /// Because ``resolve(id:as:)`` may be called multiple times with the same id (each potentially
+  /// returning a new unique proxy instance), `resignRemoteID(_:)` may also be called multiple times
+  /// with the same id, once per distinct remote proxy that is deallocated. Actor systems that want
+  /// to reference-count remote proxies for a given id can maintain a counter using `resolve`
+  /// `resignRemoteID` as the increment/decrement points, and cleanup resources necessary for a
+  /// specific ID once the count reaches zero.
+  ///
+  /// Not called if `resolve(id:as:)` threw, returned a local actor, or otherwise did not result
+  /// in a remote reference actor being created.
+  ///
+  /// The default implementation is a no-op; systems that do not need to maintain remote reference
+  /// lifecycles can leave it unimplemented.
+  ///
+  /// - Parameter id: the id of the remote distributed actor reference that is being deinitialized.
+  ///
+  /// - SeeAlso: ``resignID(_:)`` which is called for local distributed actors
+  @available(SwiftStdlib 6.5, *)
+  func resignRemoteID(_ id: ActorID)
 
   // ==== ---------------------------------------------------------------------
   // - MARK: Remote Method Invocations
@@ -385,6 +408,12 @@ public protocol DistributedActorSystem<SerializationRequirement>: Sendable {
   ) async throws
 }
 
+@available(SwiftStdlib 6.5, *)
+extension DistributedActorSystem {
+  /// Default implementation, does nothing.
+  public func resignRemoteID(_ id: ActorID) {}
+}
+
 // ==== ----------------------------------------------------------------------------------------------------------------
 // MARK: Execute Distributed Methods
 
@@ -420,12 +449,16 @@ extension DistributedActorSystem {
   ///           Throws ``ExecuteDistributedTargetMissingAccessorError`` if the `target`
   ///           does not resolve to a valid distributed function accessor, i.e. the
   ///           call identifier is incorrect, corrupted, or simply not present in this process.
+  @available(SwiftStdlib 5.7, *)
   public func executeDistributedTarget<Act>(
     on actor: Act,
     target: RemoteCallTarget,
     invocationDecoder: inout InvocationDecoder,
     handler: Self.ResultHandler
   ) async throws where Act: DistributedActor {
+    try _validateMatchingInvocationDecoder(Act.self, Self.self)
+    try _validateMatchingResultHandler(Act.self, Self.self)
+
     // NOTE: Implementation could be made more efficient because we still risk
     // demangling a RemoteCallTarget identity (if it is a mangled name) multiple
     // times. We would prefer to store if it is a mangled name, demangle, and
@@ -462,10 +495,24 @@ extension DistributedActorSystem {
       }
 
       unsafe substitutionsBuffer = .allocate(capacity: subs.count)
+      let numSubstitutions = subs.count
 
       for (offset, substitution) in subs.enumerated() {
         let element = unsafe substitutionsBuffer?.advanced(by: offset)
         unsafe element?.initialize(to: substitution)
+      }
+
+      if #available(SwiftStdlib 6.5, *) {
+        let requiredKeySubsCount = unsafe _getGenericEnvironmentKeyArgumentCount(genericEnv)
+        if numSubstitutions < requiredKeySubsCount {
+          throw ExecuteDistributedTargetError(
+            message: """
+                     Generic substitutions \(subs) do not satisfy generic \
+                     requirements of \(target) (\(targetName)): expected at \
+                     least \(requiredKeySubsCount) substitutions, got \(numSubstitutions)
+                     """,
+            errorCode: .invalidGenericSubstitutions)
+        }
       }
 
       unsafe (witnessTablesBuffer, numWitnessTables) = unsafe _getWitnessTablesFor(environment: genericEnv,
@@ -608,6 +655,58 @@ extension DistributedActorSystem {
     } catch {
       try await handler.onThrow(error: error)
     }
+  }
+}
+
+@export(implementation)
+@available(SwiftStdlib 5.7, *)
+internal func _validateMatchingInvocationDecoder<
+  Act: DistributedActor,
+  System: DistributedActorSystem
+>(_ actorType: Act.Type, _ systemType: System.Type) throws {
+  guard Act.ActorSystem.InvocationDecoder.self
+        == System.InvocationDecoder.self else {
+    let errorCode: ExecuteDistributedTargetError.ErrorCode
+    // This is @available(SwiftStdlib 6.5, *) but can't use SwiftStdlib in an @export(implementation) function
+    if #available(anyAppleOS 9999, *) {
+      errorCode = .incompatibleInvocationDecoder
+    } else {
+      errorCode = .typeDeserializationFailure
+    }
+    throw ExecuteDistributedTargetError(
+      message: """
+               Actor '\(actorType)' uses InvocationDecoder \
+               '\(Act.ActorSystem.InvocationDecoder.self)' which does not \
+               match the receiving system's decoder \
+               '\(System.InvocationDecoder.self)'
+               """,
+      errorCode: errorCode)
+  }
+}
+
+@export(implementation)
+@available(SwiftStdlib 5.7, *)
+internal func _validateMatchingResultHandler<
+  Act: DistributedActor,
+  System: DistributedActorSystem
+>(_ actorType: Act.Type, _ systemType: System.Type) throws {
+  guard Act.ActorSystem.ResultHandler.self
+        == System.ResultHandler.self else {
+    let errorCode: ExecuteDistributedTargetError.ErrorCode
+    // This is @available(SwiftStdlib 6.5, *) but can't use SwiftStdlib in an @export(implementation) function
+    if #available(anyAppleOS 9999, *) {
+      errorCode = .incompatibleResultHandler
+    } else {
+      errorCode = .typeDeserializationFailure
+    }
+    throw ExecuteDistributedTargetError(
+      message: """
+               Actor '\(actorType)' uses ResultHandler \
+               '\(Act.ActorSystem.ResultHandler.self)' which does not match \
+               the receiving system's result handler \
+               '\(System.ResultHandler.self)'
+               """,
+      errorCode: errorCode)
   }
 }
 
@@ -925,6 +1024,18 @@ public struct ExecuteDistributedTargetError: DistributedActorSystemError {
 
     // Failed to deserialize type or obtain type information for call.
     case typeDeserializationFailure
+
+    /// The actor passed to `executeDistributedTarget` belongs to an actor
+    /// system whose ``InvocationDecoder`` associated type does not match
+    /// the receiving system's ``InvocationDecoder``.
+    @available(SwiftStdlib 6.5, *)
+    case incompatibleInvocationDecoder
+
+    /// The actor passed to `executeDistributedTarget` belongs to an actor
+    /// system whose ``ResultHandler`` associated type does not match the
+    /// receiving system's ``ResultHandler``.
+    @available(SwiftStdlib 6.5, *)
+    case incompatibleResultHandler
 
     /// A general issue during the execution of the distributed call target occurred.
     case other

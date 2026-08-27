@@ -279,7 +279,10 @@ SUPPRESSIBLE_LANGUAGE_FEATURE(NonexhaustiveAttribute, 487, "Nonexhaustive Enums"
 LANGUAGE_FEATURE(ModuleSelector, 491, "Module selectors (`Module::name` syntax)")
 LANGUAGE_FEATURE(SymbolLinkageMarkers, 492, "Section placement control (`@section`, `@used`, `objectFormat`)")
 LANGUAGE_FEATURE(BuiltinConcurrencyStackNesting, 0, "Concurrency Stack Nesting Builtins")
-LANGUAGE_FEATURE(BuiltinTaskCancellationShield, 0, "Task Cancellation Shield Builtins")
+LANGUAGE_FEATURE(BuiltinTaskCancellationShield, 504, "Task Cancellation Shield Builtins")
+LANGUAGE_FEATURE(BuiltinTaskCancellationScope, 0, "Task Cancellation Scope Builtins")
+LANGUAGE_FEATURE(BuiltinTaskDeadline, 526, "Task Deadline Builtins")
+LANGUAGE_FEATURE(BuiltinCancellationHandlerWithReason, 526, "Cancellation Handler With Reason Builtins")
 LANGUAGE_FEATURE(ClosureLifetimes, 0, "Support @_lifetime on function types")
 BASELINE_LANGUAGE_FEATURE(ExcludePrivateFromMemberwiseInit, 502, "Exclude private initialized properties from memberwise init")
 LANGUAGE_FEATURE(BuiltinMarkDependence, 0, "markDependence Builtin")
@@ -291,6 +294,7 @@ SUPPRESSIBLE_LANGUAGE_FEATURE(TildeSendable, 518, "~Sendable for explicitly mark
 LANGUAGE_FEATURE(SuppressedAssociatedTypesWithDefaults, 503, "Associated types that are ~Copyable and ~Escapable")
 LANGUAGE_FEATURE(SourceWarningControl, 522, "Source-level warning control with @diagnose")
 LANGUAGE_FEATURE(BorrowInout, 519, "Ref and MutableRef")
+LANGUAGE_FEATURE(BuiltinAllocRawTyped, 0, "Builtin.allocRawTyped/deallocRawTyped")
 
 // TEMPORARY: Never use this, because it is only meant to allow us to model
 // suppression of @c in Swift interfaces as a temporary measure.
@@ -534,7 +538,10 @@ EXPERIMENTAL_FEATURE(ImportCxxMembersLazily, true)
 
 /// Import a C++ foreign reference type's primary FRT base as a Swift
 /// superclass.
-LANGUAGE_FEATURE(ForeignReferenceTypeInheritance, 0, "foreign reference type inheritance hierarchy")
+EXPERIMENTAL_FEATURE(ForeignReferenceTypeInheritance, true)
+
+/// Enable @cxx @implementation for implementing C++ functions in Swift.
+EXPERIMENTAL_FEATURE(CxxImplementation, true)
 
 /// `yielding borrow`/`yielding mutate` single-yield coroutine accessors
 // TODO: When this is turned on by default, take care of:
@@ -648,7 +655,7 @@ EXPERIMENTAL_FEATURE(StrictAccessControl, true)
 EXPERIMENTAL_FEATURE(AbstractStoredPropertyLayout, false)
 
 /// Allow use of macros to derive various conformances
-EXPERIMENTAL_FEATURE(DeriveConformancesViaMacros, false)
+EXPERIMENTAL_FEATURE(DeriveConformancesViaMacros, true)
 
 /// Allow use of `@called(...)` on function types.
 EXPERIMENTAL_FEATURE(CalledAttribute, false)
@@ -659,6 +666,17 @@ EXPERIMENTAL_FEATURE(MutateAndConsumeInDeinit, true)
 /// Import C++ methods that are hard to use correctly under their original name
 /// as '@unsafe(always)', instead of renaming them to '__<name>Unsafe'.
 EXPERIMENTAL_FEATURE(ImportUnsafeCxxMethodsAsAlwaysUnsafe, true)
+
+/// Handle lookup for llvm intrinsics like aarch64.neon.smull and .sqxtn
+LANGUAGE_FEATURE(BuiltinExtendVectorLanes, 0, "Support for accessing LLVM Builtins that widen or narrow vector lanes")
+
+/// Infer the return ownership of C++ methods that return libkern's OSObject or
+/// one of its subclasses from the method's name, following libkern's
+/// conventions.
+EXPERIMENTAL_FEATURE(LibkernOwnershipConventions, true)
+
+/// Emit `resignRemoteID` calls in remote distributed actor deinits.
+EXPERIMENTAL_FEATURE(DistributedActorResignRemoteID, false)
 
 #undef EXPERIMENTAL_FEATURE_EXCLUDED_FROM_MODULE_INTERFACE
 #undef EXPERIMENTAL_FEATURE

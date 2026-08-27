@@ -49,12 +49,11 @@ bool BuiltinInfo::isReadNone() const {
 
 const llvm::AttributeSet &
 IntrinsicInfo::getOrCreateFnAttributes(ASTContext &Ctx) const {
-  using DenseMapInfo = llvm::DenseMapInfo<llvm::AttributeSet>;
-  if (DenseMapInfo::isEqual(FnAttrs, DenseMapInfo::getEmptyKey())) {
+  if (!FnAttrs) {
     FnAttrs =
         llvm::Intrinsic::getFnAttributes(Ctx.getIntrinsicScratchContext(), ID);
   }
-  return FnAttrs;
+  return FnAttrs.value();
 }
 
 Type swift::getBuiltinType(ASTContext &Context, StringRef Name) {
@@ -1192,6 +1191,18 @@ static ValueDecl *getDeallocRawTypedOperation(ASTContext &ctx, Identifier id) {
                             _generics(_unrestricted),
                             _parameters(_rawPointer, _word, _word,
                                         _metatype(_typeparam(0))),
+                            _void);
+}
+
+static ValueDecl *getAllocErrorBoxTypedOperation(ASTContext &ctx, Identifier id) {
+  return getBuiltinFunction(ctx, id, _thin,
+                            _parameters(_rawPointer, _word, _word),
+                            _rawPointer);
+}
+
+static ValueDecl *getDeallocErrorBoxTypedOperation(ASTContext &ctx, Identifier id) {
+  return getBuiltinFunction(ctx, id, _thin,
+                            _parameters(_rawPointer, _word, _word),
                             _void);
 }
 
@@ -2423,6 +2434,20 @@ static ValueDecl *getTaskRemoveCancellationHandler(ASTContext &ctx,
       ctx, id, _thin, _parameters(_label("record", _unsafeRawPointer)), _void);
 }
 
+static ValueDecl *getTaskAddCancellationHandlerWithReason(ASTContext &ctx,
+                                                           Identifier id) {
+  // (UInt8) -> ()
+  std::array<AnyFunctionType::Param, 1> params = {
+      AnyFunctionType::Param(ctx.getUInt8Type()),
+  };
+  auto extInfo = ASTExtInfoBuilder().withNoEscape().build();
+  auto *functionType =
+      FunctionType::get(params, ctx.TheEmptyTupleType, extInfo);
+  return getBuiltinFunction(ctx, id, _thin,
+                            _parameters(_label("handler", functionType)),
+                            _unsafeRawPointer);
+}
+
 static ValueDecl *getTaskAddPriorityEscalationHandler(ASTContext &ctx,
                                                       Identifier id) {
   std::array<AnyFunctionType::Param, 2> params = {
@@ -2440,6 +2465,37 @@ static ValueDecl *getTaskAddPriorityEscalationHandler(ASTContext &ctx,
 
 static ValueDecl *getTaskRemovePriorityEscalationHandler(ASTContext &ctx,
                                                          Identifier id) {
+  return getBuiltinFunction(
+      ctx, id, _thin, _parameters(_label("record", _unsafeRawPointer)), _void);
+}
+
+static ValueDecl *getTaskPushDeadline(ASTContext &ctx, Identifier id) {
+  // <C: Clock & Identifiable, I> (clock: borrowing C, instant: borrowing I)
+  //   -> UnsafeRawPointer
+  //
+  // Operands are borrowed at +0. No copies of the clock or instant are made,
+  // the record stores borrowed pointers into the caller's frame.
+  return getBuiltinFunction(
+      ctx, id, _thin,
+      _generics(_unrestricted,
+                _conformsTo(_typeparam(0), _clock),
+                _conformsTo(_typeparam(0), _identifiable),
+                _unrestricted),
+      _parameters(_label("clock", _borrowing(_typeparam(0))),
+                  _label("instant", _borrowing(_typeparam(1)))),
+      _unsafeRawPointer);
+}
+
+static ValueDecl *getTaskPopDeadline(ASTContext &ctx, Identifier id) {
+  return getBuiltinFunction(
+      ctx, id, _thin, _parameters(_label("record", _unsafeRawPointer)), _void);
+}
+
+static ValueDecl *getTaskCancellationScopePush(ASTContext &ctx, Identifier id) {
+  return getBuiltinFunction(ctx, id, _thin, _parameters(), _unsafeRawPointer);
+}
+
+static ValueDecl *getTaskCancellationScopePop(ASTContext &ctx, Identifier id) {
   return getBuiltinFunction(
       ctx, id, _thin, _parameters(_label("record", _unsafeRawPointer)), _void);
 }
@@ -2680,8 +2736,6 @@ Type IntrinsicTypeDecoder::decodeImmediate() {
   case IITDescriptor::MMX:
   case IITDescriptor::AMX:
   case IITDescriptor::Metadata:
-  case IITDescriptor::ExtendArgument:
-  case IITDescriptor::TruncArgument:
   case IITDescriptor::VarArg:
   case IITDescriptor::Token:
   case IITDescriptor::VecOfAnyPtrsToElt:
@@ -2722,6 +2776,22 @@ Type IntrinsicTypeDecoder::decodeImmediate() {
     auto vecType = argType->getAs<BuiltinVectorType>();
     if (!vecType) return Type();
     return vecType->getElementType();
+  }
+
+  case IITDescriptor::ExtendArgument: {
+    Type argType = getTypeArgument(D.getArgumentNumber());
+    if (!argType) return Type();
+    if (auto vecType = argType->getAs<BuiltinVectorType>())
+      return vecType->getExtended(Context);
+    return Type();
+  }
+
+  case IITDescriptor::TruncArgument: {
+    Type argType = getTypeArgument(D.getArgumentNumber());
+    if (!argType) return Type();
+    if (auto vecType = argType->getAs<BuiltinVectorType>())
+      return vecType->getTruncated(Context);
+    return Type();
   }
 
   // A pointer to an immediate type.
@@ -3285,6 +3355,12 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
   case BuiltinValueKind::DeallocRawTyped:
     return getDeallocRawTypedOperation(Context, Id);
 
+  case BuiltinValueKind::AllocErrorBoxTyped:
+    return getAllocErrorBoxTypedOperation(Context, Id);
+
+  case BuiltinValueKind::DeallocErrorBoxTyped:
+    return getDeallocErrorBoxTypedOperation(Context, Id);
+
   case BuiltinValueKind::StackAlloc:
   case BuiltinValueKind::UnprotectedStackAlloc:
     return getStackAllocOperation(Context, Id);
@@ -3612,11 +3688,26 @@ ValueDecl *swift::getBuiltinValueDecl(ASTContext &Context, Identifier Id) {
   case BuiltinValueKind::TaskRemoveCancellationHandler:
     return getTaskRemoveCancellationHandler(Context, Id);
 
+  case BuiltinValueKind::TaskAddCancellationHandlerWithReason:
+    return getTaskAddCancellationHandlerWithReason(Context, Id);
+
   case BuiltinValueKind::TaskAddPriorityEscalationHandler:
     return getTaskAddPriorityEscalationHandler(Context, Id);
 
   case BuiltinValueKind::TaskRemovePriorityEscalationHandler:
     return getTaskRemovePriorityEscalationHandler(Context, Id);
+
+  case BuiltinValueKind::TaskPushDeadline:
+    return getTaskPushDeadline(Context, Id);
+
+  case BuiltinValueKind::TaskPopDeadline:
+    return getTaskPopDeadline(Context, Id);
+
+  case BuiltinValueKind::TaskCancellationScopePush:
+    return getTaskCancellationScopePush(Context, Id);
+
+  case BuiltinValueKind::TaskCancellationScopePop:
+    return getTaskCancellationScopePop(Context, Id);
 
   case BuiltinValueKind::TaskLocalValuePush:
     return getTaskLocalValuePush(Context, Id);

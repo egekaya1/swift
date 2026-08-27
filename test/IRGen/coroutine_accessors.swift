@@ -23,20 +23,6 @@
 // CHECK-SAME:    i32 0
 // CHECK-SAME:  }>
 
-// CHECK-arm64e-LABEL: _swift_coro_free.ptrauth = private constant {
-// CHECK-arm64e-SAME:    ptr @_swift_coro_free,
-// CHECK-arm64e-SAME:    i32 0,
-// CHECK-arm64e-SAME:    i64 ptrtoint (
-// CHECK-arm64e-SAME:      ptr getelementptr inbounds (
-// CHECK-arm64e-SAME:        ptr @_swift_coro_typed_malloc_allocator,
-// CHECK-arm64e-SAME:        i32 0,
-// CHECK-arm64e-SAME:        i32 2
-// CHECK-arm64e-SAME:      )
-// CHECK-arm64e-SAME:    )
-// CHECK-arm64e-SAME:    i64 40879 },
-// CHECK-arm64e-SAME:  section "llvm.ptrauth",
-// CHECK-arm64e-SAME:  align 8
-
 // CHECK-arm64e-LABEL: _swift_coro_malloc.ptrauth = private constant {
 // CHECK-arm64e-SAME:    ptr @_swift_coro_malloc,
 // CHECK-arm64e-SAME:    i32 0,
@@ -49,6 +35,20 @@
 // CHECK-arm64e-SAME:    )
 // CHECK-arm64e-SAME:    i64 24469 }
 // CHECK-arm64e-SAME:  section "llvm.ptrauth"
+// CHECK-arm64e-SAME:  align 8
+
+// CHECK-arm64e-LABEL: _swift_coro_free.ptrauth = private constant {
+// CHECK-arm64e-SAME:    ptr @_swift_coro_free,
+// CHECK-arm64e-SAME:    i32 0,
+// CHECK-arm64e-SAME:    i64 ptrtoint (
+// CHECK-arm64e-SAME:      ptr getelementptr inbounds (
+// CHECK-arm64e-SAME:        ptr @_swift_coro_malloc_allocator,
+// CHECK-arm64e-SAME:        i32 0,
+// CHECK-arm64e-SAME:        i32 2
+// CHECK-arm64e-SAME:      )
+// CHECK-arm64e-SAME:    )
+// CHECK-arm64e-SAME:    i64 40879 },
+// CHECK-arm64e-SAME:  section "llvm.ptrauth",
 // CHECK-arm64e-SAME:  align 8
 
 // CHECK-arm64e-LABEL: _swift_coro_malloc.ptrauth.{{.*}} = private constant {
@@ -256,7 +256,7 @@ public var irm: Int {
 // CHECK-LABEL:     define{{.*}} { ptr, ptr } @"$s19coroutine_accessors1SV3irmSivx"(
 // CHECK-SAME:          ptr noalias [[FRAME:%[^,]+]],
 // CHECK-SAME:          ptr swiftcoro [[ALLOCATOR:%[^,]+]],
-// CHECK-SAME:          ptr swiftself captures(none) dereferenceable({{8|16}}) [[SELF:%[^)]+]]
+// CHECK-SAME:          ptr noalias swiftself captures(none) dereferenceable({{8|16}}) [[SELF:%[^)]+]]
 // CHECK-SAME:      )
 // CHECK-SAME:      {
 // CHECK:               [[ID:%[^,]+]] = call token @llvm.coro.id.retcon.once.dynamic(
@@ -430,7 +430,7 @@ public var force_yield_once_2_convention : () {
 // CHECK-LABEL: define{{.*}} { ptr, ptr } @increment_irm_yield_once_2(
 //                  ptr noalias %0
 // CHECK-SAME:      ptr swiftcoro [[ALLOCATOR:%[^,]+]]
-//                  ptr swiftself captures(none) dereferenceable(16) %2
+//                  ptr noalias swiftself captures(none) dereferenceable(16) %2
 // CHECK-SAME:  )
 // CHECK-SAME:  {
 //      :         [[SIZE_32:%[^,]+]] = load i32

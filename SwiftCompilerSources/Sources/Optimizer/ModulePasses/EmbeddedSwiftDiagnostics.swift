@@ -179,15 +179,8 @@ private struct FunctionChecker {
     case let ucc as UnconditionalCheckedCastInst:
       checkCastTargetUniqueness(ucc.targetFormalType, in: instruction)
 
-    case let abi as AllocBoxInst:
-      // It needs a bit of work to support alloc_box of generic non-copyable structs/enums with deinit,
-      // because we need to specialize the deinit functions, though they are not explicitly referenced in SIL.
-      // Until this is supported, give an error in such cases. Otherwise IRGen would crash.
-      if abi.allocsGenericValueTypeWithDeinit {
-        throw Violation(.embedded_capture_of_generic_value_with_deinit, in: abi)
-      }
-      fallthrough
-    case is AllocRefInst,
+    case is AllocBoxInst,
+         is AllocRefInst,
          is AllocRefDynamicInst:
       try diagnoseHeapAllocation(
         Violation(.embedded_swift_allocating_type,
@@ -200,10 +193,16 @@ private struct FunctionChecker {
       )
 
     case let ba as BeginApplyInst:
-      try diagnoseHeapAllocation(
-        Violation(.embedded_swift_allocating_coroutine, in: instruction)
-      )
+      // The old yield_once_1 coroutine uses a heap-allocated frame, so it
+      // cannot be used in no-allocations mode.
+      if !ba.isCalleeAllocated {
+        try diagnoseHeapAllocation(
+          Violation(.embedded_swift_allocating_coroutine, in: instruction)
+        )
+      }
 
+      // For yield_once_2, whether it allocates on the heap or the stack
+      // depends on the provided allocator, which isn't knowable here.
       try checkApply(apply: ba)
 
     case let pai as PartialApplyInst:
@@ -587,12 +586,6 @@ private struct ReportedProblem: Hashable {
   }
 }
 
-private extension AllocBoxInst {
-  var allocsGenericValueTypeWithDeinit: Bool {
-    type.getBoxFields(in: parentFunction).contains { $0.hasGenericValueDeinit(in: parentFunction) }
-  }
-}
-
 private extension ApplySite {
   var callsEmbeddedRuntimeFunction: Bool {
     if let callee = referencedFunction,
@@ -614,25 +607,3 @@ private extension ApplySite {
   }
 }
 
-private extension Type {
-  func hasGenericValueDeinit(in function: Function) -> Bool {
-    guard isMoveOnly, let nominal = nominal else {
-      return false
-    }
-
-    if nominal.isGenericAtAnyLevel && nominal.valueTypeDestructor != nil {
-      return true
-    }
-
-    if isStruct {
-      if let fields = getNominalFields(in: function) {
-        return fields.contains { $0.hasGenericValueDeinit(in: function) }
-      }
-    } else if isEnum {
-      if let enumCases = getEnumCases(in: function) {
-        return enumCases.contains { $0.payload?.hasGenericValueDeinit(in: function) ?? false }
-      }
-    }
-    return false
-  }
-}

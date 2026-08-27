@@ -563,6 +563,9 @@ struct AddressLoweringState {
 
   // All function-exiting terminators (return or throw instructions).
   SmallVector<TermInst *, 8> exitingInsts;
+  
+  // All program-terminating instructions (unreachable instruction).
+  SmallVector<TermInst *, 8> terminatingInsts;
 
   // All instructions that yield values to callees.
   TinyPtrVector<YieldInst *> yieldInsts;
@@ -585,6 +588,9 @@ struct AddressLoweringState {
     for (auto &block : *function) {
       if (block.getTerminator()->isFunctionExiting())
         exitingInsts.push_back(block.getTerminator());
+      
+      if (block.getTerminator()->isProgramTerminating())
+        terminatingInsts.push_back(block.getTerminator());
     }
   }
 
@@ -694,6 +700,10 @@ static void convertDirectToIndirectFunctionArgs(AddressLoweringState &pass) {
       } else {
         load = argBuilder.createLoadBorrow(loc, undefAddress);
         for (SILInstruction *termInst : pass.exitingInsts) {
+          pass.getBuilder(termInst->getIterator())
+              .createEndBorrow(pass.genLoc(), load);
+        }
+        for (SILInstruction *termInst : pass.terminatingInsts) {
           pass.getBuilder(termInst->getIterator())
               .createEndBorrow(pass.genLoc(), load);
         }
@@ -3638,7 +3648,10 @@ protected:
   void visitBuiltinInst(BuiltinInst *bi) {
     switch (bi->getBuiltinKind().value_or(BuiltinValueKind::None)) {
     case BuiltinValueKind::ResumeNonThrowingContinuationReturning:
-    case BuiltinValueKind::ResumeThrowingContinuationReturning: {
+    case BuiltinValueKind::ResumeThrowingContinuationReturning:
+    case BuiltinValueKind::AddTaskLocalValue:
+    case BuiltinValueKind::TaskLocalValuePush:
+    case BuiltinValueKind::GetEnumTag: {
       SILValue opAddr = addrMat.materializeAddress(use->get());
       bi->setOperand(use->getOperandNumber(), opAddr);
       break;
@@ -3924,7 +3937,11 @@ protected:
         builder.emitLoadBorrowOperation(uncheckedCastInst->getLoc(), destAddr);
     uncheckedCastInst->replaceAllUsesWith(load);
     pass.deleter.forceDelete(uncheckedCastInst);
-    emitEndBorrows(load, pass);
+    // emitLoadBorrowOperation only produces a real borrow (needing an
+    // end_borrow) for non-trivial types; for trivial types it emits a plain
+    // load [trivial], which has no borrow scope to end.
+    if (!load->getType().isTrivial(*pass.function))
+      emitEndBorrows(load, pass);
   }
 
   void
@@ -3933,6 +3950,11 @@ protected:
   }
 
   void visitUncheckedValueCastInst(UncheckedValueCastInst *uncheckedCastInst) {
+    rewriteOpaqueUncheckedCastUse(uncheckedCastInst);
+  }
+
+  void visitUncheckedTrivialBitCastInst(
+      UncheckedTrivialBitCastInst *uncheckedCastInst) {
     rewriteOpaqueUncheckedCastUse(uncheckedCastInst);
   }
 

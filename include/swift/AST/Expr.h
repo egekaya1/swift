@@ -600,6 +600,9 @@ public:
   /// Whether this expression is a valid parent for a given TypeExpr.
   bool isValidParentOfTypeExpr(Expr *typeExpr) const;
 
+  /// Returns whether this expression comes from expanding a synthetic macro.
+  bool isFromSyntheticMacroExpansion(const DeclContext *DC) const;
+
   SWIFT_DEBUG_DUMP;
   void dump(raw_ostream &OS, unsigned Indent = 0) const;
   void dump(raw_ostream &OS, llvm::function_ref<Type(Expr *)> getType,
@@ -4652,10 +4655,12 @@ struct CaptureListEntry {
 
   explicit CaptureListEntry(PatternBindingDecl *PBD);
 
-  static CaptureListEntry
-  createParsed(ASTContext &Ctx, ReferenceOwnership ownershipKind,
-               SourceRange ownershipRange, Identifier name, SourceLoc nameLoc,
-               SourceLoc equalLoc, Expr *initializer, DeclContext *DC);
+  static CaptureListEntry createParsed(ASTContext &Ctx,
+                                       ReferenceOwnership ownershipKind,
+                                       SourceRange ownershipRange,
+                                       bool isSending, Identifier name,
+                                       SourceLoc nameLoc, SourceLoc equalLoc,
+                                       Expr *initializer, DeclContext *DC);
 
   VarDecl *getVar() const;
   bool isSimpleSelfCapture(bool excludeWeakCaptures = true) const;

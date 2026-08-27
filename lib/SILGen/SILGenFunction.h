@@ -33,6 +33,7 @@
 
 namespace swift {
 
+class AvailabilityQuery;
 class ParameterList;
 class ProfileCounterRef;
 
@@ -315,6 +316,15 @@ struct MaterializedLValue {
 enum class StorageReferenceOperationKind {
   Borrow,
   Consume
+};
+
+/// The kind of resignID to call.
+enum class DistributedResignIDKind {
+  // `resignID(_:)`
+  ResignID,
+  // `resignRemoteID(_:)`
+  // Available since: Swift 6.5
+  ResignRemoteID,
 };
 
 /// SILGenFunction - an ASTVisitor for producing SIL from function bodies.
@@ -1333,6 +1343,7 @@ public:
 
   void finalizeEmission();
   void finalizeAddTaskLocalValue(BuiltinInst *builtin);
+  void finalizeTaskPushDeadline(BuiltinInst *builtin);
 
   /// Add a callback that will run when emission is complete for the
   /// current function. The callback is expected to have signature:
@@ -1630,23 +1641,6 @@ public:
   //===--------------------------------------------------------------------===//
   // Type conversions for expr emission and thunks
   //===--------------------------------------------------------------------===//
-
-  /// A helper function that unwraps a @moveOnly wrapped object \p value,
-  /// according to its ownership.
-  ///
-  /// The @moveOnly wrapper doesn't exist in the formal type. Thus, a wrapped
-  /// value needs to be unwrapped back to copyable before being feed into
-  /// SIL instructions that require equivalence between SIL type and formal type.
-  ManagedValue emitMoveOnlyWrapperToCopyableValueIfNeeded(SILLocation loc, ManagedValue value)  {
-    if (!value.getType().isObject() || !value.getType().isMoveOnlyWrapped()) {
-      return value;
-    }
-
-    if (value.isPlusOne(*this)) {
-      return B.createOwnedMoveOnlyWrapperToCopyableValue(loc, value);
-    }
-    return B.createGuaranteedMoveOnlyWrapperToCopyableValue(loc, value);
-  }
 
   ManagedValue emitInjectEnum(SILLocation loc,
                               MutableArrayRef<ArgumentSource> payload,
@@ -2821,6 +2815,11 @@ public:
   /// Emit an `if #available` query, returning the resulting boolean test value.
   SILValue emitIfAvailableQuery(SILLocation loc, PoundAvailableInfo *info);
 
+  /// Emit an availability query for the given `AvailabilityQuery`, returning
+  /// the resulting boolean test value
+  SILValue emitAvailabilityQuery(SILLocation loc,
+                                 const AvailabilityQuery &query);
+
   //===--------------------------------------------------------------------===//
   // Back Deployment thunks
   //===--------------------------------------------------------------------===//
@@ -2894,7 +2893,7 @@ public:
   /// Specifically, this code emits SIL that performs the call
   ///
   /// \verbatim
-  ///   self.actorSystem.resignID(self.id)
+  ///   self.actorSystem.resign(Remote)ID(self.id)
   /// \endverbatim
   ///
   /// using the current builder's state as the injection point.
@@ -2902,7 +2901,8 @@ public:
   /// \param actorDecl the declaration corresponding to the actor
   /// \param actorSelf the SIL value representing the distributed actor instance
   void emitDistributedActorSystemResignIDCall(SILLocation loc,
-                              ClassDecl *actorDecl, ManagedValue actorSelf);
+                              ClassDecl *actorDecl, ManagedValue actorSelf,
+                              DistributedResignIDKind kind);
 
   /// Emits check for remote actor and a branch that implements deallocating
   /// deinit for remote proxy. Calls \p emitLocalDeinit to generate branch for

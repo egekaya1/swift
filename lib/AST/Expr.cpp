@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "swift/AST/Expr.h"
+#include "swift/AST/DeclContext.h"
 #include "swift/Basic/Assertions.h"
 #include "swift/Basic/Statistic.h"
 #include "swift/Basic/Unicode.h"
@@ -1367,8 +1368,8 @@ CaptureListEntry::CaptureListEntry(PatternBindingDecl *PBD) : PBD(PBD) {
 
 CaptureListEntry CaptureListEntry::createParsed(
     ASTContext &Ctx, ReferenceOwnership ownershipKind,
-    SourceRange ownershipRange, Identifier name, SourceLoc nameLoc,
-    SourceLoc equalLoc, Expr *initializer, DeclContext *DC) {
+    SourceRange ownershipRange, bool isSending, Identifier name,
+    SourceLoc nameLoc, SourceLoc equalLoc, Expr *initializer, DeclContext *DC) {
 
   bool forceVar = ownershipKind == ReferenceOwnership::Weak &&
                   !Ctx.LangOpts.hasFeature(Feature::ImmutableWeakCaptures);
@@ -1389,6 +1390,9 @@ CaptureListEntry CaptureListEntry::createParsed(
 
   if (CLE.isSimpleSelfCapture())
     VD->setIsSelfParamCapture();
+
+  if (isSending)
+    VD->setIsSendingCapture();
 
   return CLE;
 }
@@ -3076,6 +3080,10 @@ const Expr *Expr::findOriginalValue() const {
 Type Expr::findOriginalType() const {
   auto *expr = findOriginalValue();
   return expr->getType()->getRValueType();
+}
+
+bool Expr::isFromSyntheticMacroExpansion(const DeclContext *DC) const {
+  return ::isFromSyntheticMacroExpansion(DC->getParentModule(), getStartLoc());
 }
 
 ThrownErrorDestination

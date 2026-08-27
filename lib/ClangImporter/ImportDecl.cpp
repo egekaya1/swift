@@ -183,10 +183,18 @@ void ClangImporter::Implementation::makeComputed(AbstractStorageDecl *storage,
 
 importer::ReturnOwnershipInfo::ReturnOwnershipInfo(
     const clang::NamedDecl *decl) {
-  for (const auto *swiftAttr : decl->specific_attrs<clang::SwiftAttrAttr>()) {
-    if (swiftAttr->getAttribute() == "returns_unretained") {
+  if (!decl->hasAttrs())
+    return;
+
+  for (const auto *attr : decl->getAttrs()) {
+    if (const auto *swiftAttr = dyn_cast<clang::SwiftAttrAttr>(attr)) {
+      if (swiftAttr->getAttribute() == "returns_unretained")
+        hasReturnsUnretained = true;
+      else if (swiftAttr->getAttribute() == "returns_retained")
+        hasReturnsRetained = true;
+    } else if (isa<clang::OSReturnsNotRetainedAttr>(attr)) {
       hasReturnsUnretained = true;
-    } else if (swiftAttr->getAttribute() == "returns_retained") {
+    } else if (isa<clang::OSReturnsRetainedAttr>(attr)) {
       hasReturnsRetained = true;
     }
   }
@@ -626,8 +634,13 @@ static void applyAvailableAttribute(Decl *decl, AvailabilityRange &info,
   if (info.isAlwaysAvailable())
     return;
 
+  // A platform-versioned attribute needs a platform to attach the version to.
+  auto platform = targetPlatform(C.LangOpts);
+  if (!platform)
+    return;
+
   auto AvAttr = AvailableAttr::createPlatformVersioned(
-      C, targetPlatform(C.LangOpts), /*Message=*/"", /*Rename=*/"",
+      C, *platform, /*Message=*/"", /*Rename=*/"",
       info.getRawMinimumVersion(), /*Deprecated=*/{}, /*Obsoleted=*/{});
 
   decl->addAttribute(AvAttr);
@@ -2558,15 +2571,18 @@ namespace {
 
           // If this is an inherited foreign reference type, check if it has a
           // suitable superclass.
-          if (auto primaryBase = frtInfo.getPrimarySuperclass()) {
-            if (auto baseDecl = cast_or_null<ClassDecl>(
-                    Impl.importDecl(primaryBase, getVersion()))) {
-              auto classResult = cast<ClassDecl>(result);
-              Type superclassType = baseDecl->getDeclaredInterfaceType();
-              classResult->setSuperclass(superclassType);
-              classResult->setInherited(
-                  Impl.SwiftContext.AllocateCopy(ArrayRef<InheritedEntry>{
-                      TypeLoc::withoutLoc(superclassType)}));
+          if (Impl.SwiftContext.LangOpts.hasFeature(
+                  Feature::ForeignReferenceTypeInheritance)) {
+            if (auto primaryBase = frtInfo.getPrimarySuperclass()) {
+              if (auto baseDecl = cast_or_null<ClassDecl>(
+                      Impl.importDecl(primaryBase, getVersion()))) {
+                auto classResult = cast<ClassDecl>(result);
+                Type superclassType = baseDecl->getDeclaredInterfaceType();
+                classResult->setSuperclass(superclassType);
+                classResult->setInherited(
+                    Impl.SwiftContext.AllocateCopy(ArrayRef<InheritedEntry>{
+                        TypeLoc::withoutLoc(superclassType)}));
+              }
             }
           }
         }
@@ -2908,9 +2924,12 @@ namespace {
           // If this class is abstract, any of its methods might use a pure
           // virtual method.
           if (cxxRecordDecl->isAbstract()) {
-            Impl.markUnavailable(
-                result,
-                "abstract C++ classes cannot be used as values in Swift");
+            // In the future, this should be a hard error instead of a
+            // deprecation warning.
+            auto attr = AvailableAttr::createUniversallyDeprecated(
+                Impl.SwiftContext,
+                "abstract C++ classes cannot be used as values in Swift", "");
+            result->addAttribute(attr);
           }
 
           // Address-only type is a type that can't be passed in registers.
@@ -2974,10 +2993,11 @@ namespace {
         importer::checkRetainReleaseFunctions(classDecl, Impl);
 
         auto availability = Impl.SwiftContext.getSwift58Availability();
-        if (!availability.isAlwaysAvailable()) {
+        auto platform = targetPlatform(Impl.SwiftContext.LangOpts);
+        if (!availability.isAlwaysAvailable() && platform) {
           assert(availability.hasMinimumVersion());
           auto AvAttr = AvailableAttr::createPlatformVersioned(
-              Impl.SwiftContext, targetPlatform(Impl.SwiftContext.LangOpts),
+              Impl.SwiftContext, *platform,
               /*Message=*/"", /*Rename=*/"",
               availability.getRawMinimumVersion(), /*Deprecated=*/{},
               /*Obsoleted=*/{});
@@ -3565,37 +3585,28 @@ namespace {
                                  const clang::FunctionDecl *accessor);
 
     bool foreignReferenceTypePassedByRef(const clang::FunctionDecl *decl) {
-      bool anyParamPassesByVal =
-          llvm::any_of(decl->parameters(), [this, decl](auto *param) {
-            if (auto recordType = dyn_cast<clang::RecordType>(
-                    param->getType().getCanonicalType())) {
-              if (recordHasReferenceSemantics(recordType->getDecl())) {
-                Impl.addImportDiagnostic(
-                    decl,
-                    Diagnostic(diag::reference_passed_by_value,
-                               Impl.SwiftContext.AllocateCopy(
-                                   recordType->getDecl()->getNameAsString()),
-                               "a parameter"),
-                    decl->getLocation());
-                return true;
-              }
-            }
-            return false;
-          });
-
-      if (anyParamPassesByVal)
-        return true;
+      for (auto *param : decl->parameters()) {
+        if (auto recordType = dyn_cast<clang::RecordType>(
+                param->getType().getCanonicalType())) {
+          if (recordHasReferenceSemantics(recordType->getDecl())) {
+            Impl.addImportDiagnostic(
+                decl,
+                Diagnostic(diag::foreign_reference_type_by_value,
+                           /*isReturn=*/false, recordType->getDecl()),
+                param->getLocation());
+            return true;
+          }
+        }
+      }
 
       if (auto recordType = dyn_cast<clang::RecordType>(
               decl->getReturnType().getCanonicalType())) {
         if (recordHasReferenceSemantics(recordType->getDecl())) {
           Impl.addImportDiagnostic(
               decl,
-              Diagnostic(diag::reference_passed_by_value,
-                         Impl.SwiftContext.AllocateCopy(
-                             recordType->getDecl()->getNameAsString()),
-                         "the return"),
-              decl->getLocation());
+              Diagnostic(diag::foreign_reference_type_by_value,
+                         /*isReturn=*/true, recordType->getDecl()),
+              decl->getReturnTypeSourceRange().getBegin());
           return true;
         }
       }
@@ -5784,6 +5795,7 @@ namespace {
         }
       }
 
+      Impl.swiftify(result);
       return result;
     }
 
@@ -10973,10 +10985,13 @@ void ClangRecordMemberLoader::load(const clang::RecordDecl *clangRecord,
   if ((cxxRecord = dyn_cast<clang::CXXRecordDecl>(clangRecord)) &&
       cxxRecord->isCompleteDefinition()) {
     const clang::RecordDecl *superclassClangDecl = nullptr;
-    auto derivedInfo =
-        evaluateOrDefault(Impl.SwiftContext.evaluator,
-                          ForeignReferenceTypeInfoRequest({cxxRecord}), {});
-    superclassClangDecl = derivedInfo.getPrimarySuperclass();
+    if (Impl.SwiftContext.LangOpts.hasFeature(
+            Feature::ForeignReferenceTypeInheritance)) {
+      auto derivedInfo =
+          evaluateOrDefault(Impl.SwiftContext.evaluator,
+                            ForeignReferenceTypeInfoRequest({cxxRecord}), {});
+      superclassClangDecl = derivedInfo.getPrimarySuperclass();
+    }
 
     for (auto base : cxxRecord->bases()) {
       if (skipIfNonPublic && base.getAccessSpecifier() != clang::AS_public)
@@ -11004,7 +11019,12 @@ void ClangRecordMemberLoader::load(const clang::RecordDecl *clangRecord,
     }
   }
 
-  if ((isa<clang::CXXRecordDecl>(swiftDecl->getClangDecl())) && !storage &&
+  // These all look up members by name in the Clang record, which requires a
+  // complete definition. A foreign reference type is imported even when it is
+  // only declared, and such a type has no members to find.
+  if (auto *cxxSwiftDecl =
+          dyn_cast<clang::CXXRecordDecl>(swiftDecl->getClangDecl());
+      cxxSwiftDecl && cxxSwiftDecl->isCompleteDefinition() && !storage &&
       !inheritance) {
     (void)Impl.lookupAndImportPointee(swiftDecl);
     (void)Impl.lookupAndImportSuccessor(swiftDecl);
@@ -11242,13 +11262,18 @@ void ClangImporter::Implementation::insertMembersAndAlternates(
 
     // If there are auxiliary declarations (e.g., produced by macros), load
     // those.
-    member->visitAuxiliaryDecls([&](Decl *aux) {
-      if (auto auxValue = dyn_cast<ValueDecl>(aux)) {
-        if (auxValue->getDeclContext() == expectedDC &&
-            knownAlternateMembers.insert(auxValue).second)
-          members.push_back(auxValue);
-      }
-    });
+    auto addAuxiliaryDecls = [&](Decl *forDecl) {
+      forDecl->visitAuxiliaryDecls([&](Decl *aux) {
+        if (auto auxValue = dyn_cast<ValueDecl>(aux)) {
+          if (auxValue->getDeclContext() == expectedDC &&
+              knownAlternateMembers.insert(auxValue).second)
+            members.push_back(auxValue);
+        }
+      });
+    };
+    addAuxiliaryDecls(member);
+    for (auto alternate : getAlternateDecls(member))
+      addAuxiliaryDecls(alternate);
 
     // If this declaration shouldn't be visible, don't add it to
     // the list.

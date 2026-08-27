@@ -413,6 +413,9 @@ public:
                                       : AccessKind::Read,
               CurDC->getParentModule(), CurDC->getResilienceExpansion()))
         Flags |= CapturedValue::IsDirect;
+
+      if (CalledOnce && var->isSendingCapture())
+        Flags |= CapturedValue::IsSending;
     }
 
     // If the closure is noescape, then we can capture the decl as noescape.
@@ -464,9 +467,12 @@ public:
       if (!NoEscape)
         Flags &= ~CapturedValue::IsNoEscape;
 
-      // Regular closures cannot consume their captures.
-      if (!CalledOnce)
+      if (!CalledOnce) {
+        // Regular closures cannot consume their captures.
         Flags &= ~CapturedValue::IsConsumed;
+        // ... or have `sending` captures.
+        Flags &= ~CapturedValue::IsSending;
+      }
 
       addCapture(capture.mergeFlags(Flags));
     }
@@ -690,6 +696,9 @@ public:
     if (auto *L = dyn_cast<LoadExpr>(E))
       return getReferencedNonCopyableValue(L->getSubExpr());
 
+    if (auto *erasure = dyn_cast<ErasureExpr>(E))
+      return getReferencedNonCopyableValue(erasure->getSubExpr());
+
     if (auto *FCE = dyn_cast<FunctionConversionExpr>(E))
       return getReferencedNonCopyableValue(FCE->getSubExpr());
 
@@ -740,6 +749,12 @@ public:
             recordConsumingUse(base);
         }
       }
+    }
+
+    // Casts are consuming operations.
+    if (auto *cast = dyn_cast<ExplicitCastExpr>(E)) {
+      if (auto *V = getReferencedNonCopyableValue(cast->getSubExpr()))
+        recordConsumingUse(V);
     }
 
     // - calling `@called(once)` value

@@ -180,6 +180,7 @@ UNINTERESTING_FEATURE(ImportMacroAliases)
 UNINTERESTING_FEATURE(NoExplicitNonIsolated)
 UNINTERESTING_FEATURE(EmbeddedDynamicExclusivity)
 UNINTERESTING_FEATURE(TypedAllocation)
+UNINTERESTING_FEATURE(BuiltinAllocRawTyped)
 UNINTERESTING_FEATURE(MutateAndConsumeInDeinit)
 
 static bool usesFeatureUnderscoreOwned(Decl *D) {
@@ -472,6 +473,9 @@ static bool usesFeatureCompileTimeValues(Decl *decl) {
 UNINTERESTING_FEATURE(ClosureBodyMacro)
 UNINTERESTING_FEATURE(BuiltinConcurrencyStackNesting)
 UNINTERESTING_FEATURE(BuiltinTaskCancellationShield)
+UNINTERESTING_FEATURE(BuiltinTaskCancellationScope)
+UNINTERESTING_FEATURE(BuiltinTaskDeadline)
+UNINTERESTING_FEATURE(BuiltinCancellationHandlerWithReason)
 UNINTERESTING_FEATURE(BuiltinAddTaskLocalValue)
 UNINTERESTING_FEATURE(BuiltinContinuationNonCopyableSuccess)
 UNINTERESTING_FEATURE(CompileTimeValuesPreview)
@@ -484,9 +488,12 @@ UNINTERESTING_FEATURE(AssumeResilientCxxTypes)
 UNINTERESTING_FEATURE(ImportNonPublicCxxMembers)
 UNINTERESTING_FEATURE(ImportCxxMembersLazily)
 UNINTERESTING_FEATURE(ImportUnsafeCxxMethodsAsAlwaysUnsafe)
+UNINTERESTING_FEATURE(LibkernOwnershipConventions)
 UNINTERESTING_FEATURE(ForeignReferenceTypeInheritance)
+UNINTERESTING_FEATURE(CxxImplementation)
 UNINTERESTING_FEATURE(CoroutineAccessorsUnwindOnCallerError)
 UNINTERESTING_FEATURE(AllowRuntimeSymbolDeclarations)
+UNINTERESTING_FEATURE(DistributedActorResignRemoteID)
 
 static bool usesFeatureCoroutineAccessors(Decl *decl) {
   auto accessorDeclUsesFeatureCoroutineAccessors = [](AccessorDecl *accessor) {
@@ -496,6 +503,11 @@ static bool usesFeatureCoroutineAccessors(Decl *decl) {
   case DeclKind::Var: {
     auto *var = cast<VarDecl>(decl);
     return llvm::any_of(var->getAllAccessors(),
+                        accessorDeclUsesFeatureCoroutineAccessors);
+  }
+  case DeclKind::Subscript: {
+    auto *subscript = cast<SubscriptDecl>(decl);
+    return llvm::any_of(subscript->getAllAccessors(),
                         accessorDeclUsesFeatureCoroutineAccessors);
   }
   case DeclKind::Accessor: {
@@ -755,6 +767,8 @@ static bool usesFeatureCalledAttribute(Decl *D) {
 
   return usesTypeMatching(D, hasCalled);
 }
+
+UNINTERESTING_FEATURE(BuiltinExtendVectorLanes)
 
 // ----------------------------------------------------------------------------
 // MARK: - FeatureSet

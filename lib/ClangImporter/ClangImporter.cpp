@@ -1045,6 +1045,21 @@ void importer::addCommonInvocationArguments(
     invocationArgStrs.push_back("-fbuild-session-file=" + importerOpts.BuildSessionFilePath);
   }
 
+  if (ctx.LangOpts.EnableObjCInterop) {
+    if (importerOpts.ForceObjCMsgSendSelectorStubs) {
+      if (*importerOpts.ForceObjCMsgSendSelectorStubs)
+        invocationArgStrs.push_back("-fobjc-msgsend-selector-stubs");
+      else
+        invocationArgStrs.push_back("-fno-objc-msgsend-selector-stubs");
+    }
+    if (importerOpts.ForceObjCMsgSendClassSelectorStubs) {
+      if (*importerOpts.ForceObjCMsgSendClassSelectorStubs)
+        invocationArgStrs.push_back("-fobjc-msgsend-class-selector-stubs");
+      else
+        invocationArgStrs.push_back("-fno-objc-msgsend-class-selector-stubs");
+    }
+  }
+
   if (!importerOpts.DirectClangCC1ModuleBuild) {
     for (const auto &extraArg : importerOpts.ExtraArgs) {
       invocationArgStrs.push_back(extraArg);
@@ -2727,7 +2742,11 @@ ClangImporter::getWrapperForModule(const clang::Module *mod,
 
 PlatformAvailability::PlatformAvailability(const LangOptions &langOpts)
     : platformKind(targetPlatform(langOpts)) {
-  switch (platformKind) {
+  // Without a platform there are no platform-specific cutoff messages.
+  if (!platformKind)
+    return;
+
+  switch (*platformKind) {
   case PlatformKind::iOS:
   case PlatformKind::iOSApplicationExtension:
   case PlatformKind::macCatalyst:
@@ -2784,9 +2803,6 @@ PlatformAvailability::PlatformAvailability(const LangOptions &langOpts)
   case PlatformKind::Android:
     deprecatedAsUnavailableMessage = "";
     break;
-
-  case PlatformKind::none:
-    break;
   }
 }
 
@@ -2814,9 +2830,9 @@ PlatformAvailability::platformKindIfRelevant(StringRef platformName) const {
           .Case("android", PlatformKind::Android)
           .Default(std::nullopt);
 
-  if (result) {
-    if (platformKind == *result ||
-        inheritsAvailabilityFromPlatform(platformKind, *result))
+  if (result && platformKind) {
+    if (*platformKind == *result ||
+        inheritsAvailabilityFromPlatform(*platformKind, *result))
       return result;
   }
 
@@ -2830,10 +2846,10 @@ bool PlatformAvailability::treatDeprecatedAsUnavailable(
   unsigned major = version.getMajor();
   std::optional<unsigned> minor = version.getMinor();
 
-  switch (platformKind) {
-  case PlatformKind::none:
+  if (!platformKind)
     llvm_unreachable("version but no platform?");
 
+  switch (*platformKind) {
   case PlatformKind::macOS:
   case PlatformKind::macOSApplicationExtension:
     // Anything deprecated by macOS 10.14 is unavailable for async import
@@ -5759,21 +5775,8 @@ ClangTypeEscapability::evaluate(Evaluator &evaluator,
       // escapable, including a SWIFT_UNSAFE_REFERENCE, whose unsafety is a
       // separate axis. Non-escapable fields and bases are rejected separately,
       // where the type is imported.
-      if (auto *definition = recordDecl->getDefinition()) {
-        if (evaluateOrDefault(evaluator,
-                              ForeignReferenceTypeInfoRequest({definition}), {})
-                .isReference())
-          continue;
-      } else if (llvm::any_of(recordDecl->redecls(), [](const auto *redecl) {
-                   return hasImportReferenceAttr(
-                       cast<clang::RecordDecl>(redecl));
-                 })) {
-        // Inherited reference-ness needs a definition, but a direct annotation
-        // is enough. Ask the attribute, not the request: the request is cached
-        // per decl, so an uninstantiated class template would cache
-        // "not a reference" for good.
+      if (importer::isForeignReferenceRecord(recordDecl, evaluator))
         continue;
-      }
       if (hasSwiftAttribute(recordDecl, {"unsafe", "unsafe(always)"}))
         return CxxEscapability::Unknown;
       llvm::ArrayRef<int> STLParams;
@@ -6840,30 +6843,51 @@ findContextInterfaceAndImplementation(DeclContext *dc) {
 }
 
 static void lookupRelatedFuncs(AbstractFunctionDecl *func,
-                               SmallVectorImpl<ValueDecl *> &results) {
+                               llvm::SmallSetVector<ValueDecl *, 4> &results) {
   DeclName swiftName;
   if (auto accessor = dyn_cast<AccessorDecl>(func))
     swiftName = accessor->getStorage()->getName();
   else
     swiftName = func->getName();
 
-  if (auto ty = func->getDeclContext()->getSelfNominalTypeDecl()) {
-    NLOptions options = {NLFlags::IgnoreAccessControl, NLFlags::IgnoreMissingImports};
-    ty->lookupQualified({ ty }, DeclNameRef(swiftName), func->getLoc(),
-                        (NLFlags::QualifiedDefault) | options, results);
+  ASTContext &ctx = func->getASTContext();
+
+  // When the explicit C++ name differs from the Swift base name, also look
+  // candidates up under that C++ base name.
+  DeclName foreignName;
+  if (auto cxxAttr = func->getAttrs().getAttribute<CxxDeclAttr>()) {
+    if (!cxxAttr->Name.empty() &&
+        cxxAttr->Name != swiftName.getBaseName().userFacingName())
+      foreignName = DeclName(ctx.getIdentifier(cxxAttr->Name));
   }
-  else {
-    ASTContext &ctx = func->getASTContext();
+
+  if (auto ty = func->getDeclContext()->getSelfNominalTypeDecl()) {
+    NLOptions options = {NLFlags::IgnoreAccessControl,
+                         NLFlags::IgnoreMissingImports};
+    auto doLookup = [&](DeclName name) {
+      SmallVector<ValueDecl *, 4> found;
+      ty->lookupQualified({ty}, DeclNameRef(name), func->getLoc(),
+                          (NLFlags::QualifiedDefault) | options, found);
+      results.insert(found.begin(), found.end());
+    };
+    doLookup(swiftName);
+    if (foreignName)
+      doLookup(foreignName);
+  } else {
     UnqualifiedLookupOptions options =
-      UnqualifiedLookupFlags::IgnoreAccessControl;
-    UnqualifiedLookupDescriptor descriptor(
-        DeclNameRef(ctx, Identifier(), swiftName), func->getDeclContext(),
-        func->getLoc(), options);
-    auto lookup = evaluateOrDefault(func->getASTContext().evaluator,
-                                    UnqualifiedLookupRequest{descriptor}, {});
-    for (const auto &result : lookup) {
-      results.push_back(result.getValueDecl());
-    }
+        UnqualifiedLookupFlags::IgnoreAccessControl;
+    auto doLookup = [&](DeclName name) {
+      UnqualifiedLookupDescriptor descriptor(
+          DeclNameRef(ctx, Identifier(), name), func->getDeclContext(),
+          func->getLoc(), options);
+      auto lookup = evaluateOrDefault(ctx.evaluator,
+                                      UnqualifiedLookupRequest{descriptor}, {});
+      for (const auto &result : lookup)
+        results.insert(result.getValueDecl());
+    };
+    doLookup(swiftName);
+    if (foreignName)
+      doLookup(foreignName);
   }
 }
 
@@ -6885,7 +6909,7 @@ findFunctionInterfaceAndImplementation(AbstractFunctionDecl *func) {
   if (clangName.empty())
     return {};
 
-  SmallVector<ValueDecl *, 4> results;
+  llvm::SmallSetVector<ValueDecl *, 4> results;
   lookupRelatedFuncs(func, results);
 
   // Classify the `results` as either the interface or an implementation.
@@ -8215,6 +8239,13 @@ ClangImporter::getForeignReferenceTypeOperations(
   return Impl.getForeignReferenceTypeOperations(decl);
 }
 
+LibkernSubclass
+ClangImporter::getLibkernSubclass(const clang::RecordDecl *decl) {
+  if (auto *cxxRecord = dyn_cast<clang::CXXRecordDecl>(decl))
+    return Impl.getLibkernSubclass(cxxRecord);
+  return LibkernSubclass::None;
+}
+
 void ClangImporter::diagnoseTopLevelValue(const DeclName &name) {
   Impl.diagnoseTopLevelValue(name);
 }
@@ -8774,7 +8805,8 @@ ExplicitSafety ClangDeclExplicitSafety::evaluate(
       auto *recordDecl = pointeeType->getAsRecordDecl();
       // Pointers are ok if imported as foreign reference types,
       // all other pointers are considered unsafe.
-      return !(recordDecl && hasImportReferenceAttr(recordDecl));
+      return !(recordDecl &&
+               importer::isForeignReferenceRecord(recordDecl, evaluator));
     }
     if (auto *decl = type->getAsTagDecl()) {
       // We need to check the safety of the TagDecl corresponding to this type
@@ -8793,10 +8825,19 @@ ExplicitSafety ClangDeclExplicitSafety::evaluate(
 
     // Found unsafe; whether decl == desc.decl or not, desc.decl is unsafe
     // (see invariant, above)
-    if (hasSwiftAttribute(decl, {"unsafe", "unsafe(always)"}))
+    //
+    // For a record, the annotation may sit on any of its declarations, so the
+    // verdict must not depend on which one we were handed.
+    auto hasAttrs = [&](ArrayRef<StringRef> attrs) {
+      if (auto *recordDecl = dyn_cast<clang::RecordDecl>(decl))
+        return hasSwiftAttributeOnAnyRedecl(recordDecl, attrs);
+      return hasSwiftAttribute(decl, attrs);
+    };
+
+    if (hasAttrs({"unsafe", "unsafe(always)"}))
       return ExplicitSafety::Unsafe;
 
-    if (hasSwiftAttribute(decl, {"safe"}))
+    if (hasAttrs({"safe"}))
       continue;
 
     if (desc.isClass) {
